@@ -1,7 +1,9 @@
 @file:OptIn(ExperimentalWasmDsl::class)
 
 import com.android.build.gradle.LibraryExtension
-import com.liftric.vault.GetVaultSecretTask
+import com.android.build.gradle.internal.cxx.configure.gradleLocalProperties
+import java.util.Properties
+// import com.liftric.vault.GetVaultSecretTask
 import org.gradle.internal.classpath.Instrumented.systemProperty
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
@@ -12,9 +14,9 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.android.library)
     alias(libs.plugins.versioning)
-    alias(libs.plugins.vault.client)
+    // alias(libs.plugins.vault.client)
     id("maven-publish")
-    id("signing")
+    // id("signing")
 }
 
 repositories {
@@ -169,10 +171,8 @@ configure<LibraryExtension> {
     }
 }
 
-group = "com.liftric"
-version = with(versioning.info) {
-    if (branch == "HEAD" && dirty.not()) tag else full
-}
+group = "com.pragmaticcoders"
+version = "3.2.0"
 
 afterEvaluate {
     project.publishing.publications.withType(MavenPublication::class.java).forEach {
@@ -234,23 +234,16 @@ tasks {
         filter.excludeTestsMatching("com.liftric.cognito.idp.IdentityProviderClientTests")
     }
 
-    val testSecrets by creating(GetVaultSecretTask::class) {
-        secretPath.set("secret/apps/smartest/shared/cognito")
-    }
+    // val testSecrets by creating(GetVaultSecretTask::class) {
+    //     secretPath.set("secret/apps/smartest/shared/cognito")
+    // }
 
     val createJsEnvHack by creating {
         outputs.dir("$buildDir/gen")
 
-        if (System.getenv("region") == null || System.getenv("clientId") == null) {
-            // github ci provides region and clientId envs, locally we'll use vault directly
-            dependsOn(testSecrets)
-        }
-
         doFirst {
-            val (clientId, region) = with(testSecrets.secret.get()) {
-                ((System.getenv("clientId") ?: this["client_id_dev"].toString()) to
-                    (System.getenv("region") ?: this["client_region_dev"].toString()))
-            }
+            val clientId = System.getenv("clientId") ?: "test-client-id"
+            val region = System.getenv("region") ?: "us-east-1"
 
             mkdir("$buildDir/gen")
             with(File("$buildDir/gen/env.kt")) {
@@ -329,14 +322,22 @@ val javadocJar by tasks.registering(Jar::class) {
     archiveClassifier.set("javadoc")
 }
 
+// Load local.properties
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+
+
 publishing {
     repositories {
         maven {
-            name = "sonatype"
-            setUrl("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/pragmaticcoders/cognito-idp")
             credentials {
-                username = ossrhUsername
-                password = ossrhPassword
+                username = localProperties.getProperty("gpr.user") ?: System.getenv("USERNAME")
+                password = localProperties.getProperty("gpr.key") ?: System.getenv("TOKEN")
             }
         }
     }
@@ -347,62 +348,57 @@ publishing {
         pom {
             name.set(project.name)
             description.set("Lightweight AWS Cognito Identity Provider client for Kotlin Multiplatform projects.")
-            url.set("https://github.com/liftric/cognito-idp")
+            url.set("https://github.com/pragmaticcoders/cognito-idp")
 
             licenses {
                 license {
                     name.set("MIT")
-                    url.set("https://github.com/liftric/cognito-idp/blob/master/LICENSE")
+                    url.set("https://github.com/pragmaticcoders/cognito-idp/blob/master/LICENSE")
                 }
             }
             developers {
                 developer {
-                    id.set("benjohnde")
-                    name.set("Ben John")
-                    email.set("john@liftric.com")
-                }
-                developer {
-                    id.set("ingwersaft")
-                    name.set("Marcel Kesselring")
-                    email.set("kesselring@liftric.com")
+                    id.set("pragmaticcoders")
+                    name.set("Jakub Pruszynski")
+                    email.set("jakub@pragmaticcoders.com")
                 }
             }
             scm {
-                url.set("https://github.com/liftric/cognito-idp")
+                url.set("https://github.com/pragmaticcoders/cognito-idp")
             }
         }
     }
 }
 
-signing {
-    val signingKey: String? by project
-    val signingPassword: String? by project
-    useInMemoryPgpKeys(signingKey, signingPassword)
-    sign(publishing.publications)
-}
+// signing {
+//     val signingKey: String? by project
+//     val signingPassword: String? by project
+//     useInMemoryPgpKeys(signingKey, signingPassword)
+//     sign(publishing.publications)
+// }
 
-vault {
-    vaultAddress.set("https://dark-lord.liftric.io")
-    if (System.getenv("CI") == null) {
-        vaultTokenFilePath.set("${System.getProperty("user.home")}/.vault-token")
-    } else {
-        vaultToken.set(System.getenv("VAULT_TOKEN"))
-    }
-}
+// vault {
+//     vaultAddress.set("https://dark-lord.liftric.io")
+//     if (System.getenv("CI") == null) {
+//         vaultTokenFilePath.set("${System.getProperty("user.home")}/.vault-token")
+//     } else {
+//         vaultToken.set(System.getenv("VAULT_TOKEN"))
+//     }
+// }
 tasks {
     afterEvaluate {
-        val signingTasks = filter { it.name.startsWith("sign") }
+        // val signingTasks = filter { it.name.startsWith("sign") }
         all {
             // lets bruteforce this until the plugins play along nicely again
 
             if (name.contains("compile", true) && name.contains("kotlin", true)) {
                 dependsOn("createJsEnvHack")
             }
-            if (name.startsWith("publish")) {
-                signingTasks.forEach { signTask ->
-                    dependsOn(signTask)
-                }
-            }
+            // if (name.startsWith("publish")) {
+            //     signingTasks.forEach { signTask ->
+            //         dependsOn(signTask)
+            //     }
+            // }
         }
     }
 }
