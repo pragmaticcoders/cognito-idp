@@ -1,39 +1,45 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
 import com.android.build.gradle.LibraryExtension
-import com.liftric.vault.GetVaultSecretTask
+import com.android.build.gradle.internal.cxx.configure.gradleLocalProperties
+import java.util.Properties
+// import com.liftric.vault.GetVaultSecretTask
+import org.gradle.internal.classpath.Instrumented.systemProperty
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 import org.jetbrains.kotlin.gradle.tasks.*
 
 plugins {
-    kotlin("multiplatform") version libs.versions.kotlin
+    alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)
-    id("com.android.library") version libs.versions.android.tools.gradle
-    alias(libs.plugins.definitions)
-    alias(libs.plugins.npm.publishing)
+    alias(libs.plugins.android.library)
     alias(libs.plugins.versioning)
-    alias(libs.plugins.vault.client)
+    // alias(libs.plugins.vault.client)
     id("maven-publish")
-    id("signing")
+    // id("signing")
 }
 
 repositories {
-    mavenCentral()
     google()
+    mavenCentral()
     gradlePluginPortal()
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
 }
 
 kotlin {
-    ios {
-        binaries.framework()
+    listOf(
+        iosX64(),
+        iosArm64(),
+        iosSimulatorArm64()
+    ).forEach {
+        it.binaries.framework()
     }
 
-    iosSimulatorArm64()
-
-    androidTarget() {
+    androidTarget {
         publishAllLibraryVariants()
     }
     jvm()
@@ -53,11 +59,21 @@ kotlin {
             }
         }
     }
+    wasmJs {
+        browser ()
+        binaries.library()
+        compilations.all {
+            compileTaskProvider.configure {
+                compilerOptions.freeCompilerArgs.add("-Xir-minimized-member-names=false")
+            }
+        }
+    }
 
     sourceSets {
         val commonMain by getting {
             dependencies {
                 api(libs.ktor.client.core)
+                api(libs.ktor.client.logging)
                 api(libs.kotlinx.coroutines)
                 api(libs.kotlinx.serialization)
             }
@@ -96,17 +112,8 @@ kotlin {
                 implementation(libs.opt.java)
             }
         }
-        val iosMain by getting {
-            dependencies {
-                api(libs.ktor.client.darwin)
-            }
-        }
-        val iosTest by getting
-        val iosSimulatorArm64Main by getting {
-            dependsOn(iosMain)
-        }
-        val iosSimulatorArm64Test by getting {
-            dependsOn(iosTest)
+        iosMain.dependencies {
+            api(libs.ktor.client.darwin)
         }
         val jsMain by getting {
             dependencies {
@@ -116,6 +123,12 @@ kotlin {
         val jsTest by getting {
             dependencies {
                 implementation(kotlin("test-js"))
+            }
+        }
+        val wasmJsMain by getting {
+            dependencies {
+                api(libs.ktor.client.cio)
+                api(libs.kotlinx.browser)
             }
         }
         all {
@@ -130,7 +143,7 @@ kotlin {
 
 configure<LibraryExtension> {
     defaultConfig.apply {
-        compileSdk = 30
+        compileSdk = 35
         minSdkVersion(21)
         targetSdkVersion(30)
         testInstrumentationRunner = "org.robolectric.RobolectricTestRunner"
@@ -158,39 +171,79 @@ configure<LibraryExtension> {
     }
 }
 
-group = "com.liftric"
-version = with(versioning.info) {
-    if (branch == "HEAD" && dirty.not()) tag else full
-}
+group = "com.pragmaticcoders"
+version = "3.2.0"
 
 afterEvaluate {
     project.publishing.publications.withType(MavenPublication::class.java).forEach {
         it.groupId = group.toString()
     }
 }
+plugins.withId(libs.plugins.kotlin.multiplatform.get().pluginId) {
+    afterEvaluate {
+        tasks.matching {
+            it.name.contains("test", ignoreCase = true) &&
+                    it is org.gradle.api.tasks.testing.AbstractTestTask
+        }.configureEach {
 
+            this as org.gradle.api.tasks.testing.AbstractTestTask
+            testLogging {
+                showStandardStreams = true
+                showExceptions = true
+                showCauses = true
+                showStackTraces = true
+                events("passed", "skipped", "failed", "standardOut", "standardError")
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            }
+            addTestListener(object : org.gradle.api.tasks.testing.TestListener {
+                override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) {}
+                override fun afterSuite(suite: org.gradle.api.tasks.testing.TestDescriptor, result: org.gradle.api.tasks.testing.TestResult) {
+                    if (suite.parent == null) {
+                        println("Test results for ${suite.name}: ${result.resultType} (${result.testCount} tests, ${result.successfulTestCount} passed, ${result.failedTestCount} failed, ${result.skippedTestCount} skipped)")
+                    }
+                }
+                override fun beforeTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor) {
+                    println("Starting test: ${testDescriptor.className}.${testDescriptor.name}")
+                }
+                override fun afterTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor, result: org.gradle.api.tasks.testing.TestResult) {
+                    println("Test ${testDescriptor.className}.${testDescriptor.name} completed: ${result.resultType}")
+                }
+            })
+
+            if (name.contains("js", ignoreCase = true) || name.contains("wasm", ignoreCase = true)) {
+                systemProperty("kotlin.js.browser.karma.capture.console", "true")
+                systemProperty("kotlin.wasm.test.capture.stdout", "true")
+                systemProperty("kotlin.wasm.test.capture.stderr", "true")
+            }
+        }
+    }
+}
 tasks {
+    withType(Test::class) {
+        testLogging {
+            showStandardStreams = true
+            showExceptions = true
+            showCauses = true
+            showStackTraces = true
+            events("passed", "skipped", "failed", "standardOut", "standardError")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+    }
+
     withType(KotlinNativeSimulatorTest::class) {
         filter.excludeTestsMatching("com.liftric.cognito.idp.IdentityProviderClientTests")
     }
 
-    val testSecrets by creating(GetVaultSecretTask::class) {
-        secretPath.set("secret/apps/smartest/shared/cognito")
-    }
+    // val testSecrets by creating(GetVaultSecretTask::class) {
+    //     secretPath.set("secret/apps/smartest/shared/cognito")
+    // }
 
     val createJsEnvHack by creating {
         outputs.dir("$buildDir/gen")
 
-        if (System.getenv("region") == null || System.getenv("clientId") == null) {
-            // github ci provides region and clientId envs, locally we'll use vault directly
-            dependsOn(testSecrets)
-        }
-
         doFirst {
-            val (clientId, region) = with(testSecrets.secret.get()) {
-                ((System.getenv("clientId") ?: this["client_id_dev"].toString()) to
-                        (System.getenv("region") ?: this["client_region_dev"].toString()))
-            }
+            val clientId = System.getenv("clientId") ?: "test-client-id"
+            val region = System.getenv("region") ?: "us-east-1"
 
             mkdir("$buildDir/gen")
             with(File("$buildDir/gen/env.kt")) {
@@ -214,7 +267,7 @@ tasks {
     withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "11"
-            languageVersion = "1.5"
+            languageVersion = "2.1"
             freeCompilerArgs = listOf(
                 "-Xinline-classes"
             )
@@ -269,14 +322,22 @@ val javadocJar by tasks.registering(Jar::class) {
     archiveClassifier.set("javadoc")
 }
 
+// Load local.properties
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+
+
 publishing {
     repositories {
         maven {
-            name = "sonatype"
-            setUrl("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/pragmaticcoders/cognito-idp")
             credentials {
-                username = ossrhUsername
-                password = ossrhPassword
+                username = localProperties.getProperty("gpr.user") ?: System.getenv("USERNAME")
+                password = localProperties.getProperty("gpr.key") ?: System.getenv("TOKEN")
             }
         }
     }
@@ -287,97 +348,57 @@ publishing {
         pom {
             name.set(project.name)
             description.set("Lightweight AWS Cognito Identity Provider client for Kotlin Multiplatform projects.")
-            url.set("https://github.com/liftric/cognito-idp")
+            url.set("https://github.com/pragmaticcoders/cognito-idp")
 
             licenses {
                 license {
                     name.set("MIT")
-                    url.set("https://github.com/liftric/cognito-idp/blob/master/LICENSE")
+                    url.set("https://github.com/pragmaticcoders/cognito-idp/blob/master/LICENSE")
                 }
             }
             developers {
                 developer {
-                    id.set("benjohnde")
-                    name.set("Ben John")
-                    email.set("john@liftric.com")
-                }
-                developer {
-                    id.set("ingwersaft")
-                    name.set("Marcel Kesselring")
-                    email.set("kesselring@liftric.com")
+                    id.set("pragmaticcoders")
+                    name.set("Jakub Pruszynski")
+                    email.set("jakub@pragmaticcoders.com")
                 }
             }
             scm {
-                url.set("https://github.com/liftric/cognito-idp")
+                url.set("https://github.com/pragmaticcoders/cognito-idp")
             }
         }
     }
 }
 
-val npmAccessKey: String? by project
+// signing {
+//     val signingKey: String? by project
+//     val signingPassword: String? by project
+//     useInMemoryPgpKeys(signingKey, signingPassword)
+//     sign(publishing.publications)
+// }
 
-npmPublish {
-    organization.set("liftric")
-    access.set(PUBLIC)
-    readme.set(rootProject.file("README.md"))
-
-    packages {
-        named("js") {
-            packageName.set(project.name)
-            packageJson {
-                keywords.set(
-                    listOf(
-                        "kotlin",
-                        "cognito",
-                        "identity-provider",
-                        "liftric",
-                        "aws"
-                    )
-                )
-                license.set("MIT")
-                description.set("Lightweight AWS Cognito Identity Provider client.")
-                homepage.set("https://github.com/liftric/cognito-idp")
-            }
-        }
-    }
-
-    registries {
-        npmjs {
-            uri.set(uri("https://registry.npmjs.org"))
-            authToken.set(npmAccessKey)
-        }
-    }
-}
-
-signing {
-    val signingKey: String? by project
-    val signingPassword: String? by project
-    useInMemoryPgpKeys(signingKey, signingPassword)
-    sign(publishing.publications)
-}
-
-vault {
-    vaultAddress.set("https://dark-lord.liftric.io")
-    if (System.getenv("CI") == null) {
-        vaultTokenFilePath.set("${System.getProperty("user.home")}/.vault-token")
-    } else {
-        vaultToken.set(System.getenv("VAULT_TOKEN"))
-    }
-}
+// vault {
+//     vaultAddress.set("https://dark-lord.liftric.io")
+//     if (System.getenv("CI") == null) {
+//         vaultTokenFilePath.set("${System.getProperty("user.home")}/.vault-token")
+//     } else {
+//         vaultToken.set(System.getenv("VAULT_TOKEN"))
+//     }
+// }
 tasks {
     afterEvaluate {
-        val signingTasks = filter { it.name.startsWith("sign") }
+        // val signingTasks = filter { it.name.startsWith("sign") }
         all {
             // lets bruteforce this until the plugins play along nicely again
 
             if (name.contains("compile", true) && name.contains("kotlin", true)) {
                 dependsOn("createJsEnvHack")
             }
-            if (name.startsWith("publish")) {
-                signingTasks.forEach { signTask ->
-                    dependsOn(signTask)
-                }
-            }
+            // if (name.startsWith("publish")) {
+            //     signingTasks.forEach { signTask ->
+            //         dependsOn(signTask)
+            //     }
+            // }
         }
     }
 }
